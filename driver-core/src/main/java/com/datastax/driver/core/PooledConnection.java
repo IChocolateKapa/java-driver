@@ -68,10 +68,6 @@ class PooledConnection extends Connection {
         return trashTime;
     }
 
-    void cancelTrashTime() {
-        trashTime = Long.MAX_VALUE;
-    }
-
     void setTrashTimeIn(int timeoutSeconds) {
         trashTime = System.currentTimeMillis() + 1000 * timeoutSeconds;
     }

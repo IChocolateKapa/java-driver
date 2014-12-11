@@ -82,8 +82,11 @@ class HostConnectionPool {
         // Create initial core connections
         List<PooledConnection> l = new ArrayList<PooledConnection>(options().getCoreConnectionsPerHost(hostDistance));
         try {
-            for (int i = 0; i < options().getCoreConnectionsPerHost(hostDistance); i++)
-                l.add(manager.connectionFactory().open(this));
+            for (int i = 0; i < options().getCoreConnectionsPerHost(hostDistance); i++) {
+                PooledConnection newConnection = manager.connectionFactory().open(this);
+                newConnection.setTrashTimeIn(options().getIdleTimeoutSeconds());
+                l.add(newConnection);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             // If asked to interrupt, we can skip opening core connections, the pool will still work.
@@ -264,23 +267,29 @@ class HostConnectionPool {
             if (inFlight == 0 && trash.remove(connection))
                 close(connection);
         } else {
+            logger.trace("Scheduling trashing of {}", connection);
+            connection.setTrashTimeIn(options().getIdleTimeoutSeconds());
+
             if (connections.size() > options().getCoreConnectionsPerHost(hostDistance) && inFlight <= options().getMinSimultaneousRequestsPerConnectionThreshold(hostDistance)) {
-                connection.setTrashTimeIn(options().getIdleTimeoutSeconds());
             } else if (connection.maxAvailableStreams() < MIN_AVAILABLE_STREAMS) {
                 replaceConnection(connection);
             } else {
-                connection.cancelTrashTime();
                 signalAvailableConnection();
             }
         }
     }
 
     void trashIdleConnections(long now) {
+        int total = 0, trashed = 0;
         for (PooledConnection connection : connections) {
+            total += 1;
+            logger.trace("Checking {} for trashing (trashTime = {}, now = {})", connection, connection.getTrashTime(), now);
             if (connection.getTrashTime() < now) {
+                trashed += 1;
                 trashConnection(connection);
             }
         }
+        logger.trace("Tried to trash {}/{} connections to {}", trashed, total, host);
     }
 
     // Trash the connection and create a new one, but we don't call trashConnection
@@ -299,7 +308,8 @@ class HostConnectionPool {
                 int opened = open.get();
                 if (opened <= options().getCoreConnectionsPerHost(hostDistance)) {
                     connection.markForTrash.set(false);
-                    connection.cancelTrashTime();
+                    logger.trace("Cancelling trashing of {} from trashConnection", connection);
+                    connection.setTrashTimeIn(options().getIdleTimeoutSeconds());
                     return false;
                 }
 
@@ -316,6 +326,7 @@ class HostConnectionPool {
     }
 
     private void doTrashConnection(PooledConnection connection) {
+        logger.trace("Trashing {}", connection);
         trash.add(connection);
         connections.remove(connection);
 
@@ -342,7 +353,9 @@ class HostConnectionPool {
 
         // Now really open the connection
         try {
-            connections.add(manager.connectionFactory().open(this));
+            PooledConnection newConnection = manager.connectionFactory().open(this);
+            newConnection.setTrashTimeIn(options().getIdleTimeoutSeconds());
+            connections.add(newConnection);
             signalAvailableConnection();
             return true;
         } catch (InterruptedException e) {
